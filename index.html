@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Video Verification</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+            color: #333;
+        }
+        h1 {
+            color: #2c3e50;
+        }
+        .container {
+            margin-top: 30px;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        #videoContainer {
+            position: relative;
+            width: 100%;
+            max-width: 480px;
+            margin: 20px auto;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        #video {
+            width: 100%;
+            background-color: #f0f0f0;
+            border-radius: 8px;
+            transform: scaleX(-1); /* Mirror effect */
+        }
+        #phraseOverlay {
+            position: absolute;
+            bottom: 20px;
+            left: 0;
+            right: 0;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            display: none;
+        }
+        #timer {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 20px;
+            font-weight: bold;
+            display: none;
+        }
+        #recordingIndicator {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            background-color: red;
+            display: none;
+            animation: blink 1s infinite;
+        }
+        @keyframes blink {
+            0% { opacity: 1; }
+            50% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
+        .btn {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            margin: 10px;
+        }
+        .btn:hover {
+            background-color: #2980b9;
+        }
+        .btn:disabled {
+            background-color: #95a5a6;
+            cursor: not-allowed;
+        }
+        .results {
+            margin-top: 20px;
+            display: none;
+            padding: 15px;
+            border-radius: 8px;
+            background-color: #f8f9fa;
+        }
+        .score-container {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 15px;
+        }
+        .score-box {
+            text-align: center;
+            padding: 10px;
+            border-radius: 5px;
+            background-color: #ecf0f1;
+            min-width: 100px;
+        }
+        .score-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+        .loading {
+            display: inline-block;
+            position: relative;
+            width: 80px;
+            height: 80px;
+            margin: 20px auto;
+        }
+        .loading div {
+            display: inline-block;
+            position: absolute;
+            left: 8px;
+            width: 16px;
+            background: #3498db;
+            animation: loading 1.2s cubic-bezier(0, 0.5, 0.5, 1) infinite;
+        }
+        .loading div:nth-child(1) {
+            left: 8px;
+            animation-delay: -0.24s;
+        }
+        .loading div:nth-child(2) {
+            left: 32px;
+            animation-delay: -0.12s;
+        }
+        .loading div:nth-child(3) {
+            left: 56px;
+            animation-delay: 0;
+        }
+        @keyframes loading {
+            0% { top: 8px; height: 64px; }
+            50%, 100% { top: 24px; height: 32px; }
+        }
+        #loadingView {
+            display: none;
+        }
+        .view {
+            margin: 20px 0;
+        }
+        .success-icon {
+            font-size: 4rem;
+            color: #2ecc71;
+            margin-bottom: 10px;
+        }
+        .error-icon {
+            font-size: 4rem;
+            color: #e74c3c;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Live Video Verification</h1>
+    
+    <!-- Welcome View -->
+    <div id="welcomeView" class="view container">
+        <h2>Identity Verification</h2>
+        <p>We need to verify your identity with a quick video recording.</p>
+        <p>You'll need to read a short phrase while looking at your camera.</p>
+        <button id="startBtn" class="btn">Verify Me</button>
+    </div>
+    
+    <!-- Profile view -->
+    <div id="profilePhotoView" class="view container" style="display: none;">
+        <h2>Profile Photo</h2>
+        <p>Please upload a clear photo of your face for verification purposes.</p>
+        
+        <div id="profilePreviewContainer" style="margin: 20px auto; width: 200px; height: 200px; border-radius: 50%; overflow: hidden; background-color: #f0f0f0; display: none;">
+            <img id="profilePreview" style="width: 100%; height: 100%; object-fit: cover;" alt="Profile Preview" />
+        </div>
+        
+        <div id="uploadControls">
+            <input type="file" id="profilePhotoInput" accept="image/*" style="display: none;" />
+            <button id="selectPhotoBtn" class="btn">Select Photo</button>
+            <p id="photoStatus" style="margin-top: 10px; color: #7f8c8d;"></p>
+        </div>
+        
+        <button id="continueWithPhotoBtn" class="btn" disabled>Continue</button>
+        <button id="backToWelcomeBtn" class="btn" style="background-color: #95a5a6;">Back</button>
+    </div>
+    
+    <!-- Instructions View -->
+    <div id="instructionsView" class="view container" style="display: none;">
+        <h2>Ready to verify?</h2>
+        <p>When you click "Yes", your camera will turn on and you'll see a phrase to read aloud.</p>
+        <p>The recording will automatically stop after 8 seconds.</p>
+        <p>Please ensure you're in a well-lit area and your face is clearly visible.</p>
+        <button id="readyBtn" class="btn">Yes, I'm Ready</button>
+        <button id="cancelBtn" class="btn" style="background-color: #95a5a6;">Cancel</button>
+    </div>
+    
+    <!-- Recording View -->
+    <div id="recordingView" class="view container" style="display: none;">
+        <h2>Say the Phrase</h2>
+        <div id="videoContainer">
+            <video id="video" autoplay muted playsinline></video>
+            <div id="phraseOverlay"></div>
+            <div id="timer"></div>
+            <div id="recordingIndicator"></div>
+        </div>
+        <p>Please read the phrase aloud clearly when the recording starts.</p>
+    </div>
+    
+    <!-- Loading View -->
+    <div id="loadingView" class="view container">
+        <h2>Verifying Your Identity</h2>
+        <div class="loading"><div></div><div></div><div></div></div>
+        <p>Please wait while we process your verification...</p>
+    </div>
+    
+    <!-- Results View -->
+    <div id="resultsView" class="view container" style="display: none;">
+        <div id="successResult" style="display: none;">
+            <div class="success-icon">✓</div>
+            <h2>Verification Successful</h2>
+            <p>Your identity has been verified successfully.</p>
+        </div>
+        <div id="failureResult" style="display: none;">
+            <div class="error-icon">✗</div>
+            <h2>Verification Failed</h2>
+            <p id="failureReason">We couldn't verify your identity. Please try again.</p>
+        </div>
+        
+        <div class="results">
+            <h3>Verification Scores</h3>
+            <div class="score-container">
+                <div class="score-box">
+                    <div>Speech Match</div>
+                    <div id="speechScore" class="score-value">-</div>
+                </div>
+                <div class="score-box">
+                    <div>Face Match</div>
+                    <div id="faceScore" class="score-value">-</div>
+                </div>
+                <div class="score-box">
+                    <div>Liveness</div>
+                    <div id="livenessScore" class="score-value">-</div>
+                </div>
+            </div>
+        </div>
+        
+        <button id="tryAgainBtn" class="btn">Try Again</button>
+    </div>
+    
+    <script>
+        // Configuration
+        const API_URL = 'https://col-agent-api-test.azurewebsites.net';
+        const RECORDING_DURATION = 8000; // 8 seconds
+        
+        // DOM Elements
+        const welcomeView = document.getElementById('welcomeView');
+        const instructionsView = document.getElementById('instructionsView');
+        const recordingView = document.getElementById('recordingView');
+        const loadingView = document.getElementById('loadingView');
+        const resultsView = document.getElementById('resultsView');
+        
+        const startBtn = document.getElementById('startBtn');
+        const readyBtn = document.getElementById('readyBtn');
+        const cancelBtn = document.getElementById('cancelBtn');
+        const tryAgainBtn = document.getElementById('tryAgainBtn');
+        
+        const video = document.getElementById('video');
+        const phraseOverlay = document.getElementById('phraseOverlay');
+        const timer = document.getElementById('timer');
+        const recordingIndicator = document.getElementById('recordingIndicator');
+        
+        const successResult = document.getElementById('successResult');
+        const failureResult = document.getElementById('failureResult');
+        const failureReason = document.getElementById('failureReason');
+        
+        const speechScore = document.getElementById('speechScore');
+        const faceScore = document.getElementById('faceScore');
+        const livenessScore = document.getElementById('livenessScore');
+        
+        const profilePhotoView = document.getElementById('profilePhotoView');
+        const profilePreviewContainer = document.getElementById('profilePreviewContainer');
+        const profilePreview = document.getElementById('profilePreview');
+        const profilePhotoInput = document.getElementById('profilePhotoInput');
+        const selectPhotoBtn = document.getElementById('selectPhotoBtn');
+        const photoStatus = document.getElementById('photoStatus');
+        const continueWithPhotoBtn = document.getElementById('continueWithPhotoBtn');
+        const backToWelcomeBtn = document.getElementById('backToWelcomeBtn');
+        
+        // Global variables
+        let mediaStream = null;
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let currentPhrase = '';
+        let currentUserId = '';
+        
+        // Button Event Listeners
+        startBtn.addEventListener('click', () => {
+            welcomeView.style.display = 'none';
+            profilePhotoView.style.display = 'block';
+            
+            // Generate a user ID at the beginning of the process
+            currentUserId = 'user_' + Math.random().toString(36).substring(2, 10);
+            console.log('Generated user ID:', currentUserId);
+            
+            // Reset profile photo view
+            profilePreviewContainer.style.display = 'none';
+            photoStatus.textContent = 'Please upload a profile photo.';
+            continueWithPhotoBtn.disabled = true;
+        });
+        
+        readyBtn.addEventListener('click', startVerification);
+        
+        cancelBtn.addEventListener('click', () => {
+            instructionsView.style.display = 'none';
+            welcomeView.style.display = 'block';
+        });
+        
+        tryAgainBtn.addEventListener('click', () => {
+            phraseOverlay.textContent = '';
+            
+            profilePhotoInput.value = '';
+            
+            profilePreviewContainer.style.display = 'none';
+            photoStatus.textContent = 'Please upload a profile photo.';
+            continueWithPhotoBtn.disabled = true;
+            
+            recordedChunks = [];
+            
+            resultsView.style.display = 'none';
+            welcomeView.style.display = 'block';
+        });
+        
+        selectPhotoBtn.addEventListener('click', () => {
+            profilePhotoInput.click();
+        });
+
+        profilePhotoInput.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files[0]) {
+                const file = e.target.files[0];
+                
+                // Preview the selected photo
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    profilePreview.src = e.target.result;
+                    profilePreviewContainer.style.display = 'block';
+                };
+                reader.readAsDataURL(file);
+                
+                // Upload the photo
+                uploadProfilePhoto(file);
+            }
+        });
+
+        continueWithPhotoBtn.addEventListener('click', () => {
+            profilePhotoView.style.display = 'none';
+            instructionsView.style.display = 'block';
+        });
+
+        backToWelcomeBtn.addEventListener('click', () => {
+            profilePhotoView.style.display = 'none';
+            welcomeView.style.display = 'block';
+        });
+
+        // Function to upload profile photo
+        async function uploadProfilePhoto(file) {
+            try {
+                photoStatus.textContent = 'Uploading...';
+                
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('user_id', currentUserId);
+                
+                const response = await fetch(`${API_URL}/upload_profile`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.ok) {
+                    photoStatus.textContent = 'Profile photo uploaded successfully!';
+                    continueWithPhotoBtn.disabled = false;
+                } else {
+                    photoStatus.textContent = `Error: ${result.error || 'Failed to upload photo'}`;
+                    continueWithPhotoBtn.disabled = true;
+                }
+            } catch (error) {
+                console.error('Error uploading profile photo:', error);
+                photoStatus.textContent = 'Error uploading photo. Please try again.';
+                continueWithPhotoBtn.disabled = true;
+            }
+        }
+        
+        // Functions
+        async function startVerification() {
+            try {
+                instructionsView.style.display = 'none';
+                recordingView.style.display = 'block';
+                
+                phraseOverlay.style.display = 'none';
+                
+                const response = await fetch(`${API_URL}/challenge?user_id=${currentUserId}`);
+                if (!response.ok) {
+                    throw new Error(`Failed to get challenge: ${response.status} ${response.statusText}`);
+                }
+                const data = await response.json();
+                currentPhrase = data.phrase;
+                
+                await setupMediaStream();
+                
+                phraseOverlay.textContent = currentPhrase;
+                phraseOverlay.style.display = 'block';
+                
+                setTimeout(startRecording, 1000);
+            } catch (error) {
+                console.error('Error starting verification:', error);
+                showError('Could not start verification. Please check your camera and microphone permissions.');
+            }
+        }
+
+        async function setupMediaStream() {
+            try {
+                // Request camera and microphone access
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user' },
+                    audio: true
+                });
+                
+                // Connect the stream to the video element
+                video.srcObject = mediaStream;
+                await video.play();
+            } catch (error) {
+                console.error('Error accessing media devices:', error);
+                throw new Error('Could not access camera or microphone');
+            }
+        }
+        
+        function startRecording() {
+            // Setup media recorder
+            try {
+                recordedChunks = [];
+                
+                // Check browser support for different formats
+                let mimeType = '';
+                if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')) {
+                    mimeType = 'video/webm;codecs=vp9,opus';
+                } else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')) {
+                    mimeType = 'video/webm;codecs=vp8,opus';
+                } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+                    mimeType = 'video/mp4';
+                }
+                
+                const options = mimeType ? { mimeType } : {};
+                mediaRecorder = new MediaRecorder(mediaStream, options);
+                
+                // Event listeners for recording
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        recordedChunks.push(event.data);
+                    }
+                };
+                
+                mediaRecorder.onstop = submitRecording;
+                
+                // Start recording
+                mediaRecorder.start();
+                recordingIndicator.style.display = 'block';
+                
+                // Setup timer
+                timer.style.display = 'block';
+                let timeLeft = RECORDING_DURATION / 1000;
+                timer.textContent = `${timeLeft}s`;
+                
+                const timerInterval = setInterval(() => {
+                    timeLeft--;
+                    timer.textContent = `${timeLeft}s`;
+                    
+                    if (timeLeft <= 0) {
+                        clearInterval(timerInterval);
+                    }
+                }, 1000);
+                
+                // Stop recording after duration
+                setTimeout(() => {
+                    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                        mediaRecorder.stop();
+                        recordingIndicator.style.display = 'none';
+                        clearInterval(timerInterval);
+                    }
+                }, RECORDING_DURATION);
+                
+            } catch (error) {
+                console.error('Error starting recording:', error);
+                showError('Could not start recording. Please try again.');
+            }
+        }
+        
+        async function submitRecording() {
+            try {
+                // Clean up media stream
+                stopMediaStream();
+                
+                // Show loading view
+                recordingView.style.display = 'none';
+                loadingView.style.display = 'block';
+                
+                // Create file from recorded chunks
+                const blob = new Blob(recordedChunks, {
+                    type: recordedChunks[0].type
+                });
+                
+                // Create form data for upload
+                const formData = new FormData();
+                formData.append('file', blob, 'verification.webm');
+                formData.append('user_id', currentUserId); // Use the same user_id from earlier
+                
+                console.log('Submitting verification for user ID:', currentUserId);
+                
+                // Send to backend
+                const response = await fetch(`${API_URL}/verify`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                showResults(result);
+                
+            } catch (error) {
+                console.error('Error submitting recording:', error);
+                showError('Could not submit verification. Please try again.');
+            }
+        }
+        
+        function stopMediaStream() {
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+                mediaStream = null;
+            }
+        }
+        
+        function showResults(result) {
+            // Hide loading view
+            loadingView.style.display = 'none';
+            resultsView.style.display = 'block';
+            
+            // Display scores
+            document.querySelector('.results').style.display = 'block';
+            speechScore.textContent = Math.round(result.speech * 100) + '%';
+            faceScore.textContent = Math.round(result.face * 100) + '%';
+            livenessScore.textContent = Math.round(result.liveness * 100) + '%';
+            
+            // Show success or failure
+            if (result.ok) {
+                successResult.style.display = 'block';
+                failureResult.style.display = 'none';
+            } else {
+                successResult.style.display = 'none';
+                failureResult.style.display = 'block';
+                
+                // Determine failure reason based on new thresholds
+                if (result.error) {
+                    failureReason.textContent = result.error;
+                } else if (result.speech < 0.60) { // Changed from 0.80 to 0.60
+                    failureReason.textContent = 'We couldn\'t clearly hear you saying the phrase. Please try again in a quieter environment.';
+                } else if (result.face < 0.80) { // Unchanged at 0.80
+                    failureReason.textContent = 'We couldn\'t match your face to your profile. Please ensure your face is clearly visible.';
+                } else if (result.liveness < 0.50) { // Changed from 0.80 to 0.50
+                    failureReason.textContent = 'We couldn\'t verify that you are a live person. Please try again with better lighting.';
+                } else {
+                    failureReason.textContent = 'Verification failed. Please try again.';
+                }
+            }
+        }
+        
+        function showError(message) {
+            // Clean up
+            stopMediaStream();
+            
+            // Hide all views
+            welcomeView.style.display = 'none';
+            instructionsView.style.display = 'none';
+            recordingView.style.display = 'none';
+            loadingView.style.display = 'none';
+            
+            // Show results view with error
+            resultsView.style.display = 'block';
+            successResult.style.display = 'none';
+            failureResult.style.display = 'block';
+            failureReason.textContent = message;
+            
+            // Hide scores
+            document.querySelector('.results').style.display = 'none';
+        }
+    </script>
+</body>
+</html>
