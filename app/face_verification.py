@@ -1,106 +1,183 @@
 import os
-import cv2
-import insightface
-import numpy as np
-from insightface.app import FaceAnalysis
-import tempfile
 import logging
+from dotenv import load_dotenv
+import uuid
 
+load_dotenv()
+
+# Configure logging early
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler()]
+)
 logger = logging.getLogger("video-verification")
 
-# Initialize the face analysis model
-face_app = None
 
-def init_face_model():
-    global face_app
-    if face_app is None:
+class NNPackFilter(logging.Filter):
+    def filter(self, record):
+        if isinstance(record.msg, str):
+            return not ("NNPACK" in record.msg and "Unsupported hardware" in record.msg)
+        return True
+
+logging.getLogger().addFilter(NNPackFilter())
+
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Dict
+
+from generate_challenge_phrase import generate_challenge_phrase
+from liveness_cnn import calculate_liveness_score
+from face_verification import calculate_face_similarity
+from whisper import calculate_speech_score
+from whisper import transcribe_audio
+from infra.azure_blob import upload_blob, download_blob
+
+app = FastAPI(title="Video Verification API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # TODO: Modify this in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# In-memory storage for challenge phrases
+# In production, use Redis or another caching solution
+CHALLENGE_PHRASES: Dict[str, str] = {}
+
+
+async def process_verification(video_file: UploadFile, user_id: str):
+    logger.info(f"Starting verification process for user {user_id}")
+    expected_phrase = CHALLENGE_PHRASES.get(user_id, "")
+    if not expected_phrase:
+        logger.warning(f"No challenge phrase found for user {user_id}")
+        return {
+            "ok": False,
+            "speech": 0.0,
+            "face": 0.0,
+            "liveness": 0.0,
+            "error": "No challenge phrase found for this user"
+        }
+    video_blob_url = None
+    try:
+        # Read video bytes directly from UploadFile
+        video_bytes = await video_file.read()
+        video_blob_name = f"{user_id}_{uuid.uuid4().hex}.webm"
+        video_blob_url = upload_blob(
+            os.environ["AZURE_RECORDINGS_CONTAINER"],
+            video_blob_name,
+            video_bytes,
+            "video/webm"
+        )
+        # Download profile image from Azure Blob Storage
+        profile_blob_name = f"{user_id}.jpg"  # or .png if you want to check both
         try:
-            # Initialize the InsightFace model
-            face_app = FaceAnalysis(providers=['CPUExecutionProvider'])
-            face_app.prepare(ctx_id=0, det_size=(640, 640))
-            logger.info("InsightFace model initialized successfully")
+            profile_image_bytes = download_blob(os.environ["AZURE_PROFILE_CONTAINER"], profile_blob_name)
         except Exception as e:
-            logger.error(f"Error initializing InsightFace model: {e}")
-            raise e
-
-def extract_frame_from_video(video_path, frame_index=10):
-    """Extract a frame from the video for face analysis"""
-    try:
-        cap = cv2.VideoCapture(video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        # Use a frame from about 1/3 into the video to give time for user to settle
-        target_frame = min(frame_index, total_frames - 1)
-        
-        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-        ret, frame = cap.read()
-        cap.release()
-        
-        if not ret:
-            logger.error(f"Failed to extract frame {target_frame} from video")
-            return None
-            
-        return frame
+            logger.error(f"Could not download profile image for user {user_id}: {e}")
+            profile_image_bytes = None
+        await video_file.seek(0)
+        transcription = await transcribe_audio(video_file)
+        logger.info(f"Transcription: {transcription}")
+        speech_score = calculate_speech_score(expected_phrase, transcription)
+        logger.info(f"Speech score: {speech_score}, expected: '{expected_phrase}', got: '{transcription}'")
+        # Pass video bytes directly to face and liveness functions (update those if needed)
+        face_score = await calculate_face_similarity(video_bytes, user_id, profile_image_bytes)
+        logger.info(f"Face score: {face_score}")
+        liveness_score = await calculate_liveness_score(video_bytes)
+        logger.info(f"Liveness score: {liveness_score}")
+        speech_passed = speech_score >= 0.60
+        face_passed = face_score >= 0.80
+        liveness_passed = liveness_score >= 0.50
+        passed = speech_passed and face_passed and liveness_passed
+        CHALLENGE_PHRASES.pop(user_id, None)
+        logger.info(f"Verification for user {user_id} completed: passed={passed}, "
+                    f"speech={speech_score}, "
+                    f"face={face_score}, "
+                    f"liveness={liveness_score}")
+        return {
+            "ok": bool(passed),
+            "speech": float(speech_score),
+            "face": float(face_score),
+            "liveness": float(liveness_score),
+            "video_url": video_blob_url
+        }
     except Exception as e:
-        logger.error(f"Error extracting frame from video: {e}")
-        return None
+        logger.error(f"Error processing verification: {e}\n{traceback.format_exc()}")
+        return {
+            "ok": False,
+            "speech": 0.0,
+            "face": 0.0,
+            "liveness": 0.0,
+            "error": str(e),
+            "video_url": video_blob_url
+        }
 
-def get_face_embedding(image):
-    """Get face embedding from an image using InsightFace"""
-    init_face_model()
-    
+
+@app.get("/")
+async def root():
+    return {"message": "Video Verification API is running"}
+
+
+@app.get("/challenge")
+async def get_challenge(user_id: str):
+    phrase = generate_challenge_phrase()
+
+    CHALLENGE_PHRASES[user_id] = phrase
+
+    logger.info(f"Generated challenge phrase for user {user_id}: {phrase}")
+    return {"phrase": phrase}
+
+
+@app.post("/verify")
+async def verify_video(
+        file: UploadFile = File(...),
+        user_id: str = Form(...)
+):
+    logger.info(f"Received verification request for user {user_id}")
+
+    result = await process_verification(file, user_id)
+
+    return result
+
+
+@app.post("/upload_profile")
+async def upload_profile_photo(
+        file: UploadFile = File(...),
+        user_id: str = Form(...)
+):
+    logger.info(f"Received profile photo upload for user {user_id}")
+
+    content_type = file.content_type
+    if not content_type.startswith("image/"):
+        return {"ok": False, "error": "Uploaded file is not an image"}
+
+    extension = "jpg"
+    if content_type == "image/png":
+        extension = "png"
+    elif content_type == "image/jpeg":
+        extension = "jpg"
+
+    blob_name = f"{user_id}.{extension}"
     try:
-        faces = face_app.get(image)
-        
-        if not faces:
-            logger.warning("No face detected in the image")
-            return None
-            
-        # Use the largest face if multiple faces are detected
-        faces = sorted(faces, key=lambda x: x.bbox[2] * x.bbox[3], reverse=True)
-        largest_face = faces[0]
-        
-        return largest_face.embedding
+        content = await file.read()
+        url = upload_blob(
+            os.environ["AZURE_PROFILE_CONTAINER"],
+            blob_name,
+            content,
+            content_type
+        )
+        logger.info(f"Profile photo saved for user {user_id} at {url}")
+        return {"ok": True, "profile_url": url}
     except Exception as e:
-        logger.error(f"Error getting face embedding: {e}")
-        return None
+        logger.error(f"Error saving profile photo: {e}")
+        return {"ok": False, "error": str(e)}
 
-def compare_face_embeddings(embedding1, embedding2):
-    """Compare two face embeddings and return similarity score"""
-    if embedding1 is None or embedding2 is None:
-        return 0.0
-        
-    # Calculate cosine similarity
-    similarity = np.dot(embedding1, embedding2) / (np.linalg.norm(embedding1) * np.linalg.norm(embedding2))
-    
-    # Normalize to 0-1 range (InsightFace similarity scores are typically in range -1 to 1)
-    normalized_score = (similarity + 1) / 2
-    
-    return float(round(normalized_score, 2))
 
-async def calculate_face_similarity(video_path, user_id, profile_image_bytes):
-    """Calculate face similarity between video frame and profile photo (from bytes)"""
-    try:
-        # Extract frame from video
-        video_frame = extract_frame_from_video(video_path)
-        if video_frame is None:
-            return 0.0
-        # Load profile photo from bytes
-        if profile_image_bytes is None:
-            logger.warning(f"No profile photo bytes provided for user {user_id}")
-            return 0.0
-        np_arr = np.frombuffer(profile_image_bytes, np.uint8)
-        profile_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        if profile_image is None:
-            logger.error(f"Failed to decode profile photo for user {user_id}")
-            return 0.0
-        # Get face embeddings
-        video_embedding = get_face_embedding(video_frame)
-        profile_embedding = get_face_embedding(profile_image)
-        # Compare embeddings
-        similarity = compare_face_embeddings(video_embedding, profile_embedding)
-        logger.info(f"Face similarity score: {similarity}")
-        return similarity
-    except Exception as e:
-        logger.error(f"Error calculating face similarity: {e}")
-        return 0.0
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True, log_level="info",
+                access_log=True, use_colors=True)

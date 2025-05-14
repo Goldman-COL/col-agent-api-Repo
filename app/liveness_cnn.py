@@ -2,47 +2,43 @@ import cv2
 import asyncio
 import logging
 from deepface import DeepFace
+import tempfile
+import os
 
 logger = logging.getLogger("video-verification.liveness")
 
-async def calculate_liveness_score(video_path: str, frame_sample_rate: int = 5) -> float:
-    logger.info(f"Starting liveness calculation on video: {video_path} with sampling rate 1/{frame_sample_rate}")
-    
-    def analyze(path):
-        logger.info(f"Opening video file for frame extraction: {path}")
-        cap = cv2.VideoCapture(path)
-        
+async def calculate_liveness_score(video_bytes, frame_sample_rate: int = 5) -> float:
+    logger.info(f"Starting liveness calculation on video bytes with sampling rate 1/{frame_sample_rate}")
+    def analyze(video_bytes_inner):
+        # Write video bytes to a temporary file for cv2.VideoCapture
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_video:
+            temp_video.write(video_bytes_inner)
+            temp_video_path = temp_video.name
+        logger.info(f"Opening video file for frame extraction: {temp_video_path}")
+        cap = cv2.VideoCapture(temp_video_path)
         if not cap.isOpened():
-            logger.error(f"Failed to open video file: {path}")
+            logger.error(f"Failed to open video file: {temp_video_path}")
+            os.remove(temp_video_path)
             return 0.0
-            
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         duration = frame_count / fps if fps > 0 else 0
-        
         logger.info(f"Video properties - FPS: {fps}, Total frames: {frame_count}, Duration: {duration:.2f} seconds")
-        
         frame_index = 0
         analyzed_frames = 0
         real_count = 0
         spoofed_count = 0
         error_count = 0
-        
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-                
             frame_index += 1
-            
             if frame_index % frame_sample_rate != 0:
                 continue
-                
             analyzed_frames += 1
-            
             if analyzed_frames % 5 == 0:
                 logger.info(f"Processing frame {frame_index}/{frame_count} (analyzed: {analyzed_frames})")
-            
             try:
                 faces = DeepFace.extract_faces(
                     img_path=frame,
@@ -51,7 +47,6 @@ async def calculate_liveness_score(video_path: str, frame_sample_rate: int = 5) 
                     align=True,
                     anti_spoofing=True
                 )
-                
                 if faces:
                     if faces[0].get("is_real", False):
                         real_count += 1
@@ -64,22 +59,18 @@ async def calculate_liveness_score(video_path: str, frame_sample_rate: int = 5) 
             except Exception as e:
                 error_count += 1
                 logger.warning(f"Error processing frame {frame_index}: {str(e)}")
-        
         cap.release()
-        
+        os.remove(temp_video_path)
         live_ratio = real_count / analyzed_frames if analyzed_frames > 0 else 0.0
-        
         logger.info(f"Liveness analysis complete - "
                    f"Analyzed frames: {analyzed_frames}, "
                    f"Real frames: {real_count}, "
                    f"Spoofed frames: {spoofed_count}, "
                    f"Error frames: {error_count}, "
                    f"Live ratio: {live_ratio:.4f}")
-        
         return live_ratio
-
     try:
-        live_ratio = await asyncio.to_thread(analyze, video_path)
+        live_ratio = await asyncio.to_thread(analyze, video_bytes)
         logger.info(f"Final liveness score: {live_ratio:.4f}")
         return max(0.0, min(1.0, live_ratio))
     except Exception as e:

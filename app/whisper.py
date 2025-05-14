@@ -1,7 +1,6 @@
 from difflib import SequenceMatcher
 import os
 import re
-import tempfile
 from openai import OpenAI
 from fastapi import UploadFile
 
@@ -10,25 +9,13 @@ async def transcribe_audio(audio_file: UploadFile) -> str:
     client = OpenAI(
         api_key=os.environ.get("OPENAI_API_KEY")
     )
-    
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".webm")
-    temp_path = temp_file.name
-    
     try:
-        content = await audio_file.read()
-        with open(temp_path, "wb") as f:
-            f.write(content)
-        
         await audio_file.seek(0)
-        
-        with open(temp_path, "rb") as audio:
-            transcription = client.audio.transcriptions.create(
-                file=audio,
-                model="gpt-4o-mini-transcribe"
-            )
-        
+        transcription = client.audio.transcriptions.create(
+            file=audio_file.file,
+            model="gpt-4o-mini-transcribe"
+        )
         print(f"Transcription completed for {audio_file.filename}, result is {transcription.text}")
-        
         return transcription.text
     except Exception as error:
         print(f"Error transcribing audio: {error}")
