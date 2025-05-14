@@ -26,12 +26,12 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict
 
-from generate_challenge_phrase import generate_challenge_phrase
-from liveness_cnn import calculate_liveness_score
-from face_verification import calculate_face_similarity
-from whisper import calculate_speech_score
-from whisper import transcribe_audio
-from infra.azure_blob import upload_blob, download_blob
+from app.generate_challenge_phrase import generate_challenge_phrase
+from app.liveness_cnn import calculate_liveness_score
+from app.face_verification import calculate_face_similarity
+from app.whisper import calculate_speech_score
+from app.whisper import transcribe_audio
+from app.infra.azure_blob import upload_blob, download_blob
 
 app = FastAPI(title="Video Verification API")
 
