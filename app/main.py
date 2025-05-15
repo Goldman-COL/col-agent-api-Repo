@@ -2,6 +2,8 @@ import os
 import logging
 from dotenv import load_dotenv
 import uuid
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 load_dotenv()
 
@@ -33,6 +35,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.infra.azure_blob import upload_blob, download_blob
 
 app = FastAPI(title="Video Verification API")
+
+# Mount the static directory
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 app.add_middleware(
     CORSMiddleware,
@@ -115,7 +120,7 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {"message": "Video Verification API is running"}
+    return FileResponse("app/static/index.html")
 
 # @app.get("/challenge")
 # async def get_challenge(user_id: str):
