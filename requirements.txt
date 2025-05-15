@@ -8,7 +8,7 @@ python-multipart
 # insightface
 # numpy
 # deepface
-# openai
+openai
 # requests
 # typing-extensions
 # tf-keras

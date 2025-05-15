@@ -31,8 +31,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.generate_challenge_phrase import generate_challenge_phrase
 # from app.liveness_cnn import calculate_liveness_score
 # from app.face_verification import calculate_face_similarity
-# from app.whisper import calculate_speech_score
-# from app.whisper import transcribe_audio
+from app.whisper import calculate_speech_score
+from app.whisper import transcribe_audio
 from app.infra.azure_blob import upload_blob, download_blob
 
 app = FastAPI(title="Video Verification API")
@@ -76,13 +76,26 @@ async def process_verification(video_file: UploadFile, user_id: str):
             "video/webm"
         )
         
-        # For now, return a basic response without verification
+        # Reset file pointer for transcription
+        await video_file.seek(0)
+        
+        # Transcribe the audio from the video
+        transcription = await transcribe_audio(video_file)
+        logger.info(f"Transcription: {transcription}")
+        
+        # Calculate speech score
+        speech_score = calculate_speech_score(expected_phrase, transcription)
+        logger.info(f"Speech score: {speech_score}, expected: '{expected_phrase}', got: '{transcription}'")
+        
+        # For now, return response with speech verification only
+        speech_passed = speech_score >= 0.60
         return {
-            "ok": True,
-            "speech": 1.0,  # Placeholder
+            "ok": bool(speech_passed),
+            "speech": float(speech_score),
             "face": 1.0,    # Placeholder
             "liveness": 1.0, # Placeholder
-            "video_url": video_blob_url
+            "video_url": video_blob_url,
+            "transcription": transcription  # Added for debugging
         }
     except Exception as e:
         logger.error(f"Error processing verification: {e}\n{traceback.format_exc()}")
