@@ -3,12 +3,12 @@ gunicorn
 uvicorn
 python-dotenv
 azure-storage-blob
+python-multipart
 # opencv-python
 # insightface
 # numpy
 # deepface
 # openai
-python-multipart
 # requests
 # typing-extensions
 # tf-keras

@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import uuid
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from typing import Dict
 
 load_dotenv()
 
@@ -25,9 +26,8 @@ logger = logging.getLogger("video-verification")
 
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-# from typing import Dict
 
-# from app.generate_challenge_phrase import generate_challenge_phrase
+from app.generate_challenge_phrase import generate_challenge_phrase
 # from app.liveness_cnn import calculate_liveness_score
 # from app.face_verification import calculate_face_similarity
 # from app.whisper import calculate_speech_score
@@ -49,7 +49,7 @@ app.add_middleware(
 
 # In-memory storage for challenge phrases
 # In production, use Redis or another caching solution
-# CHALLENGE_PHRASES: Dict[str, str] = {}
+CHALLENGE_PHRASES: Dict[str, str] = {}
 
 # async def process_verification(video_file: UploadFile, user_id: str):
 #     logger.info(f"Starting verification process for user {user_id}")
@@ -122,12 +122,12 @@ app.add_middleware(
 async def root():
     return FileResponse("app/static/index.html")
 
-# @app.get("/challenge")
-# async def get_challenge(user_id: str):
-#     phrase = generate_challenge_phrase()
-#     CHALLENGE_PHRASES[user_id] = phrase
-#     logger.info(f"Generated challenge phrase for user {user_id}: {phrase}")
-#     return {"phrase": phrase}
+@app.get("/challenge")
+async def get_challenge(user_id: str):
+    phrase = generate_challenge_phrase()
+    CHALLENGE_PHRASES[user_id] = phrase
+    logger.info(f"Generated challenge phrase for user {user_id}: {phrase}")
+    return {"phrase": phrase}
 
 # @app.post("/verify")
 # async def verify_video(
