@@ -13,3 +13,4 @@ openai
 # typing-extensions
 # tf-keras
 # onnxruntime
+moviepy

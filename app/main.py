@@ -3,9 +3,11 @@ import logging
 from dotenv import load_dotenv
 import uuid
 import traceback
+import tempfile
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from typing import Dict
+from moviepy.editor import VideoFileClip
 
 load_dotenv()
 
@@ -76,27 +78,55 @@ async def process_verification(video_file: UploadFile, user_id: str):
             "video/webm"
         )
         
-        # Reset file pointer for transcription
-        await video_file.seek(0)
-        
-        # Transcribe the audio from the video
-        transcription = await transcribe_audio(video_file)
-        logger.info(f"Transcription: {transcription}")
-        
-        # Calculate speech score
-        speech_score = calculate_speech_score(expected_phrase, transcription)
-        logger.info(f"Speech score: {speech_score}, expected: '{expected_phrase}', got: '{transcription}'")
-        
-        # For now, return response with speech verification only
-        speech_passed = speech_score >= 0.60
-        return {
-            "ok": bool(speech_passed),
-            "speech": float(speech_score),
-            "face": 1.0,    # Placeholder
-            "liveness": 1.0, # Placeholder
-            "video_url": video_blob_url,
-            "transcription": transcription  # Added for debugging
-        }
+        # Create temporary files for video and audio
+        with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as video_temp:
+            video_temp.write(video_bytes)
+            video_temp_path = video_temp.name
+
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as audio_temp:
+            audio_temp_path = audio_temp.name
+
+        try:
+            # Extract audio from video
+            video_clip = VideoFileClip(video_temp_path)
+            video_clip.audio.write_audiofile(audio_temp_path)
+            video_clip.close()
+
+            # Read the audio file
+            with open(audio_temp_path, 'rb') as audio_file:
+                # Create a new UploadFile for the audio
+                audio_upload = UploadFile(
+                    filename="audio.wav",
+                    file=audio_file,
+                    content_type="audio/wav"
+                )
+                
+                # Transcribe the audio
+                transcription = await transcribe_audio(audio_upload)
+                logger.info(f"Transcription: {transcription}")
+                
+                # Calculate speech score
+                speech_score = calculate_speech_score(expected_phrase, transcription)
+                logger.info(f"Speech score: {speech_score}, expected: '{expected_phrase}', got: '{transcription}'")
+                
+                # For now, return response with speech verification only
+                speech_passed = speech_score >= 0.60
+                return {
+                    "ok": bool(speech_passed),
+                    "speech": float(speech_score),
+                    "face": 1.0,    # Placeholder
+                    "liveness": 1.0, # Placeholder
+                    "video_url": video_blob_url,
+                    "transcription": transcription  # Added for debugging
+                }
+        finally:
+            # Clean up temporary files
+            try:
+                os.unlink(video_temp_path)
+                os.unlink(audio_temp_path)
+            except Exception as e:
+                logger.error(f"Error cleaning up temporary files: {e}")
+
     except Exception as e:
         logger.error(f"Error processing verification: {e}\n{traceback.format_exc()}")
         return {
