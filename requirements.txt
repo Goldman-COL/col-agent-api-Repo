@@ -13,4 +13,3 @@ openai
 # typing-extensions
 # tf-keras
 # onnxruntime
-moviepy==1.0.3

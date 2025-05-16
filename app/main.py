@@ -4,10 +4,10 @@ from dotenv import load_dotenv
 import uuid
 import traceback
 import tempfile
+import subprocess
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from typing import Dict
-from moviepy.editor import VideoFileClip
 
 load_dotenv()
 
@@ -87,10 +87,28 @@ async def process_verification(video_file: UploadFile, user_id: str):
             audio_temp_path = audio_temp.name
 
         try:
-            # Extract audio from video
-            video_clip = VideoFileClip(video_temp_path)
-            video_clip.audio.write_audiofile(audio_temp_path)
-            video_clip.close()
+            # Use ffmpeg directly to extract audio
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-i', video_temp_path,
+                '-vn',  # No video
+                '-acodec', 'pcm_s16le',  # PCM 16-bit
+                '-ar', '16000',  # 16kHz sample rate
+                '-ac', '1',  # Mono
+                '-y',  # Overwrite output file
+                audio_temp_path
+            ]
+            
+            process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            stdout, stderr = process.communicate()
+            
+            if process.returncode != 0:
+                logger.error(f"FFmpeg error: {stderr.decode()}")
+                raise Exception(f"Failed to extract audio: {stderr.decode()}")
 
             # Read the audio file
             with open(audio_temp_path, 'rb') as audio_file:
