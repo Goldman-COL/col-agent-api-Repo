@@ -31,6 +31,12 @@ jobs:
       
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Clear Python cache
+        run: |
+          find . -name "__pycache__" -exec rm -rf {} +
+          find . -name "*.pyc" -exec rm -f {} +
+        working-directory: .
         
       # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
 
