@@ -114,9 +114,8 @@ async def process_verification(video_file: UploadFile, user_id: str):
             with open(audio_temp_path, 'rb') as audio_file:
                 # Create a new UploadFile for the audio
                 audio_upload = UploadFile(
-                    filename="audio.wav",
                     file=audio_file,
-                    content_type="audio/wav"
+                    filename="audio.wav"
                 )
                 
                 # Transcribe the audio
