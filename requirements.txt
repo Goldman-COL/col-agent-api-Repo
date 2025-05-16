@@ -4,9 +4,9 @@ uvicorn
 python-dotenv
 azure-storage-blob
 python-multipart
-# opencv-python
-# insightface
-# numpy
+opencv-python
+insightface
+numpy
 # deepface
 openai
 # requests

@@ -32,7 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.generate_challenge_phrase import generate_challenge_phrase
 # from app.liveness_cnn import calculate_liveness_score
-# from app.face_verification import calculate_face_similarity
+from app.face_verification import calculate_face_similarity
 from app.whisper import calculate_speech_score
 from app.whisper import transcribe_audio
 from app.infra.azure_blob import upload_blob, download_blob
@@ -132,13 +132,28 @@ async def process_verification(video_file: UploadFile, user_id: str):
                 # Calculate speech score
                 speech_score = calculate_speech_score(expected_phrase, transcription)
                 logger.info(f"Speech score: {speech_score}, expected: '{expected_phrase}', got: '{transcription}'")
+
+                # Download profile image from Azure Blob Storage
+                profile_blob_name = f"{user_id}.jpg"  # or .png if you want to check both
+                try:
+                    profile_image_bytes = download_blob(os.environ["AZURE_PROFILE_CONTAINER"], profile_blob_name)
+                except Exception as e:
+                    logger.error(f"Could not download profile image for user {user_id}: {e}")
+                    profile_image_bytes = None
+
+                # Calculate face similarity
+                face_score = await calculate_face_similarity(video_bytes, user_id, profile_image_bytes)
+                logger.info(f"Face score: {face_score}")
                 
-                # For now, return response with speech verification only
+                # For now, return response with speech and face verification
                 speech_passed = speech_score >= 0.60
+                face_passed = face_score >= 0.80
+                passed = speech_passed and face_passed
+                
                 return {
-                    "ok": bool(speech_passed),
+                    "ok": bool(passed),
                     "speech": float(speech_score),
-                    "face": 1.0,    # Placeholder
+                    "face": float(face_score),
                     "liveness": 1.0, # Placeholder
                     "video_url": video_blob_url,
                     "transcription": transcription  # Added for debugging
