@@ -33,7 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.generate_challenge_phrase import generate_challenge_phrase
 # from app.liveness_cnn import calculate_liveness_score
-from app.face_verification import calculate_face_similarity
+# from app.face_verification import calculate_face_similarity
 from app.whisper import calculate_speech_score
 from app.whisper import transcribe_audio
 from app.infra.azure_blob import upload_blob, download_blob
