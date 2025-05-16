@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import uuid
 import traceback
 import tempfile
+from tempfile import SpooledTemporaryFile
 import subprocess
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -114,8 +115,7 @@ async def process_verification(video_file: UploadFile, user_id: str):
             with open(audio_temp_path, 'rb') as audio_file:
                 audio_bytes = audio_file.read()
                 
-                # Create a new UploadFile using SpooledTemporaryFile
-                from fastapi.datastructures import SpooledTemporaryFile
+                # Create a new UploadFile using SpooledTemporaryFile from tempfile
                 spooled_file = SpooledTemporaryFile()
                 spooled_file.write(audio_bytes)
                 spooled_file.seek(0)
