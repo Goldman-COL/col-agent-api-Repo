@@ -110,11 +110,18 @@ async def process_verification(video_file: UploadFile, user_id: str):
                 logger.error(f"FFmpeg error: {stderr.decode()}")
                 raise Exception(f"Failed to extract audio: {stderr.decode()}")
 
-            # Read the audio file
+            # Read the audio file and create a new UploadFile
             with open(audio_temp_path, 'rb') as audio_file:
-                # Create a new UploadFile for the audio
+                audio_bytes = audio_file.read()
+                
+                # Create a new UploadFile using SpooledTemporaryFile
+                from fastapi.datastructures import SpooledTemporaryFile
+                spooled_file = SpooledTemporaryFile()
+                spooled_file.write(audio_bytes)
+                spooled_file.seek(0)
+                
                 audio_upload = UploadFile(
-                    file=audio_file,
+                    file=spooled_file,
                     filename="audio.wav"
                 )
                 
