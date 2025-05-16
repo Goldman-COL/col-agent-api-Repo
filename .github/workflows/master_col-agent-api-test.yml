@@ -30,12 +30,18 @@ jobs:
           source venv/bin/activate
       
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
 
       - name: Clear Python cache
         run: |
           find . -name "__pycache__" -exec rm -rf {} +
           find . -name "*.pyc" -exec rm -f {} +
+          find . -name "*.pyo" -exec rm -f {} +
+          find . -name "*.pyd" -exec rm -f {} +
+          find . -name ".coverage" -exec rm -f {} +
+          find . -name "*.so" -exec rm -f {} +
         working-directory: .
         
       # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
