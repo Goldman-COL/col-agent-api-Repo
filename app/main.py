@@ -41,7 +41,7 @@ from app.generate_challenge_phrase import generate_challenge_phrase
 #from app.face_verification import calculate_face_similarity
 from app.whisper import calculate_speech_score
 from app.whisper import transcribe_audio
-from infra.azure_blob import upload_blob, download_blob
+from app.infra.azure_blob import upload_blob, download_blob
 
 app = FastAPI(title="Video Verification API")
 
