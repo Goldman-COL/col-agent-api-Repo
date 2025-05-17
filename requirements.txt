@@ -8,8 +8,8 @@ pydantic
 requests
 azure-storage-blob
 openai
-#insightface
-#deepface
+insightface
+deepface
 opencv-python
 numpy
 scikit-learn
