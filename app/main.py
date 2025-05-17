@@ -34,6 +34,7 @@ from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 import random
 from typing import List, Optional, Dict
+from fastapi.responses import FileResponse
 
 
 from app.generate_challenge_phrase import generate_challenge_phrase
@@ -154,9 +155,9 @@ async def process_verification(video_file: UploadFile, user_id: str):
             "video_url": video_blob_url
         }
 
-@app.get("/")
+@app.get("/", response_class=FileResponse)
 async def root():
-    return {"message": "Video Verification API is running"}
+    return FileResponse("app/static/index.html")
 
 @app.get("/challenge")
 async def get_challenge(user_id: str):
