@@ -1,4 +1,16 @@
+import os
+import logging
+import tempfile
+import string
+import shutil
+import traceback
+import warnings
+from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 import random
+from typing import List, Optional, Dict
+from dotenv import load_dotenv
 
 def generate_challenge_phrase() -> str:
     template_options = [

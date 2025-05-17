@@ -1,15 +1,41 @@
-fastapi==0.109.2
-gunicorn==21.2.0
-uvicorn==0.27.1
-python-dotenv==1.0.1
-azure-storage-blob==12.19.0
-python-multipart==0.0.9
-opencv-python==4.9.0.80
-insightface==0.7.3
-numpy==1.26.4
-# deepface
-openai==1.12.0
-# requests
-# typing-extensions
-# tf-keras
-onnxruntime==1.17.0
+fastapi
+uvicorn
+gunicorn
+python-dotenv
+python-multipart
+starlette
+pydantic
+requests
+azure-storage-blob
+openai
+#insightface
+#deepface
+opencv-python
+numpy
+scikit-learn
+scikit-image
+scipy
+matplotlib
+pillow
+imageio
+tifffile
+protobuf
+onnx
+onnxruntime
+coloredlogs
+humanfriendly
+anyio
+sniffio
+h11
+httpcore
+httptools
+websockets
+PyYAML
+# joblib
+# threadpoolctl
+packaging
+six
+idna
+charset-normalizer
+urllib3
+watchfiles

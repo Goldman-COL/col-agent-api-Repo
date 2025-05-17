@@ -1,14 +1,9 @@
 import os
 import logging
+from pathlib import Path
 from dotenv import load_dotenv
+import time
 import uuid
-import traceback
-import tempfile
-from tempfile import SpooledTemporaryFile
-import subprocess
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from typing import Dict
 
 load_dotenv()
 
@@ -20,23 +15,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger("video-verification")
 
-# class NNPackFilter(logging.Filter):
-#     def filter(self, record):
-#         if isinstance(record.msg, str):
-#             return not ("NNPACK" in record.msg and "Unsupported hardware" in record.msg)
-#         return True
+class NNPackFilter(logging.Filter):
+    def filter(self, record):
+        if isinstance(record.msg, str):
+            return not ("NNPACK" in record.msg and "Unsupported hardware" in record.msg)
+        return True
 
-# logging.getLogger().addFilter(NNPackFilter())
+logging.getLogger().addFilter(NNPackFilter())
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.staticfiles import StaticFiles
+import tempfile
+import string
+import shutil
+import traceback
+import warnings
+from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+import random
+from typing import List, Optional, Dict
+
 
 from app.generate_challenge_phrase import generate_challenge_phrase
-# from app.liveness_cnn import calculate_liveness_score
-# from app.face_verification import calculate_face_similarity
+#from app.liveness_cnn import calculate_liveness_score
+#from app.face_verification import calculate_face_similarity
 from app.whisper import calculate_speech_score
 from app.whisper import transcribe_audio
-from app.infra.azure_blob import upload_blob, download_blob
+from infra.azure_blob import upload_blob, download_blob
 
 app = FastAPI(title="Video Verification API")
 
@@ -55,6 +60,31 @@ app.add_middleware(
 # In production, use Redis or another caching solution
 CHALLENGE_PHRASES: Dict[str, str] = {}
 
+def safe_delete(filepath, retries=5, delay=0.2):
+    """Attempt to delete a file, retrying if Windows locks it temporarily."""
+    for _ in range(retries):
+        try:
+            if os.path.exists(filepath):
+                os.unlink(filepath)
+            return
+        except PermissionError:
+            time.sleep(delay)
+    # Final attempt, let exception propagate if it fails
+    if os.path.exists(filepath):
+        os.unlink(filepath)
+
+async def extract_audio_from_video(video_file: UploadFile) -> str:
+    temp_video_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_video:
+            temp_video_path = temp_video.name
+            content = await video_file.read()
+            temp_video.write(content)
+        return temp_video_path
+    except Exception as e:
+        logger.error(f"Error extracting audio: {e}")
+        raise e
+
 async def process_verification(video_file: UploadFile, user_id: str):
     logger.info(f"Starting verification process for user {user_id}")
     expected_phrase = CHALLENGE_PHRASES.get(user_id, "")
@@ -67,10 +97,13 @@ async def process_verification(video_file: UploadFile, user_id: str):
             "liveness": 0.0,
             "error": "No challenge phrase found for this user"
         }
+    temp_file_path = None
     video_blob_url = None
     try:
-        # Read video bytes directly from UploadFile
-        video_bytes = await video_file.read()
+        temp_file_path = await extract_audio_from_video(video_file)
+        # Upload the video to Azure Blob Storage
+        with open(temp_file_path, "rb") as f:
+            video_bytes = f.read()
         video_blob_name = f"{user_id}_{uuid.uuid4().hex}.webm"
         video_blob_url = upload_blob(
             os.environ["AZURE_RECORDINGS_CONTAINER"],
@@ -78,94 +111,38 @@ async def process_verification(video_file: UploadFile, user_id: str):
             video_bytes,
             "video/webm"
         )
-        
-        # Create temporary files for video and audio
-        with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as video_temp:
-            video_temp.write(video_bytes)
-            video_temp_path = video_temp.name
-
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as audio_temp:
-            audio_temp_path = audio_temp.name
-
+        # Download profile image from Azure Blob Storage
+        profile_blob_name = f"{user_id}.jpg"  # or .png if you want to check both
         try:
-            # Use ffmpeg directly to extract audio
-            ffmpeg_cmd = [
-                'ffmpeg',
-                '-i', video_temp_path,
-                '-vn',  # No video
-                '-acodec', 'pcm_s16le',  # PCM 16-bit
-                '-ar', '16000',  # 16kHz sample rate
-                '-ac', '1',  # Mono
-                '-y',  # Overwrite output file
-                audio_temp_path
-            ]
-            
-            process = subprocess.Popen(
-                ffmpeg_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            stdout, stderr = process.communicate()
-            
-            if process.returncode != 0:
-                logger.error(f"FFmpeg error: {stderr.decode()}")
-                raise Exception(f"Failed to extract audio: {stderr.decode()}")
-
-            # Read the audio file and create a new UploadFile
-            with open(audio_temp_path, 'rb') as audio_file:
-                audio_bytes = audio_file.read()
-                
-                # Create a new UploadFile using SpooledTemporaryFile from tempfile
-                spooled_file = SpooledTemporaryFile()
-                spooled_file.write(audio_bytes)
-                spooled_file.seek(0)
-                
-                audio_upload = UploadFile(
-                    file=spooled_file,
-                    filename="audio.wav"
-                )
-                
-                # Transcribe the audio
-                transcription = await transcribe_audio(audio_upload)
-                logger.info(f"Transcription: {transcription}")
-                
-                # Calculate speech score
-                speech_score = calculate_speech_score(expected_phrase, transcription)
-                logger.info(f"Speech score: {speech_score}, expected: '{expected_phrase}', got: '{transcription}'")
-
-                # Download profile image from Azure Blob Storage
-                profile_blob_name = f"{user_id}.jpg"  # or .png if you want to check both
-                try:
-                    profile_image_bytes = download_blob(os.environ["AZURE_PROFILE_CONTAINER"], profile_blob_name)
-                except Exception as e:
-                    logger.error(f"Could not download profile image for user {user_id}: {e}")
-                    profile_image_bytes = None
-
-                # Calculate face similarity
-                face_score = await calculate_face_similarity(video_bytes, user_id, profile_image_bytes)
-                logger.info(f"Face score: {face_score}")
-                
-                # For now, return response with speech and face verification
-                speech_passed = speech_score >= 0.60
-                face_passed = face_score >= 0.80
-                passed = speech_passed and face_passed
-                
-                return {
-                    "ok": bool(passed),
-                    "speech": float(speech_score),
-                    "face": float(face_score),
-                    "liveness": 1.0, # Placeholder
-                    "video_url": video_blob_url,
-                    "transcription": transcription  # Added for debugging
-                }
-        finally:
-            # Clean up temporary files
-            try:
-                os.unlink(video_temp_path)
-                os.unlink(audio_temp_path)
-            except Exception as e:
-                logger.error(f"Error cleaning up temporary files: {e}")
-
+            profile_image_bytes = download_blob(os.environ["AZURE_PROFILE_CONTAINER"], profile_blob_name)
+        except Exception as e:
+            logger.error(f"Could not download profile image for user {user_id}: {e}")
+            profile_image_bytes = None
+        await video_file.seek(0)
+        transcription = await transcribe_audio(video_file)
+        logger.info(f"Transcription: {transcription}")
+        speech_score = calculate_speech_score(expected_phrase, transcription)
+        logger.info(f"Speech score: {speech_score}, expected: '{expected_phrase}', got: '{transcription}'")
+        face_score = await calculate_face_similarity(temp_file_path, user_id, profile_image_bytes)
+        logger.info(f"Face score: {face_score}")
+        liveness_score = await calculate_liveness_score(temp_file_path)
+        logger.info(f"Liveness score: {liveness_score}")
+        speech_passed = speech_score >= 0.60
+        face_passed = face_score >= 0.80
+        liveness_passed = liveness_score >= 0.50
+        passed = speech_passed and face_passed and liveness_passed
+        CHALLENGE_PHRASES.pop(user_id, None)
+        logger.info(f"Verification for user {user_id} completed: passed={passed}, "
+                    f"speech={speech_score}, "
+                    f"face={face_score}, "
+                    f"liveness={liveness_score}")
+        return {
+            "ok": bool(passed),
+            "speech": float(speech_score),
+            "face": float(face_score),
+            "liveness": float(liveness_score),
+            "video_url": video_blob_url
+        }
     except Exception as e:
         logger.error(f"Error processing verification: {e}\n{traceback.format_exc()}")
         return {
@@ -179,28 +156,32 @@ async def process_verification(video_file: UploadFile, user_id: str):
 
 @app.get("/")
 async def root():
-    return FileResponse("app/static/index.html")
+    return {"message": "Video Verification API is running"}
 
 @app.get("/challenge")
 async def get_challenge(user_id: str):
     phrase = generate_challenge_phrase()
+    
     CHALLENGE_PHRASES[user_id] = phrase
+    
     logger.info(f"Generated challenge phrase for user {user_id}: {phrase}")
     return {"phrase": phrase}
 
 @app.post("/verify")
 async def verify_video(
-        file: UploadFile = File(...),
-        user_id: str = Form(...)
+    file: UploadFile = File(...),
+    user_id: str = Form(...)
 ):
     logger.info(f"Received verification request for user {user_id}")
+    
     result = await process_verification(file, user_id)
+    
     return result
 
 @app.post("/upload_profile")
 async def upload_profile_photo(
-        file: UploadFile = File(...),
-        user_id: str = Form(...)
+    file: UploadFile = File(...),
+    user_id: str = Form(...)
 ):
     logger.info(f"Received profile photo upload for user {user_id}")
 

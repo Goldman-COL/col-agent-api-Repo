@@ -23,36 +23,24 @@ def init_face_model():
             logger.error(f"Error initializing InsightFace model: {e}")
             raise e
 
-def extract_frame_from_video(video_bytes):
+def extract_frame_from_video(video_path, frame_index=10):
     """Extract a frame from the video for face analysis"""
     try:
-        # Save video bytes to temporary file
-        with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as video_temp:
-            video_temp.write(video_bytes)
-            video_temp_path = video_temp.name
-
-        try:
-            cap = cv2.VideoCapture(video_temp_path)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # Use a frame from about 1/3 into the video to give time for user to settle
+        target_frame = min(frame_index, total_frames - 1)
+        
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        ret, frame = cap.read()
+        cap.release()
+        
+        if not ret:
+            logger.error(f"Failed to extract frame {target_frame} from video")
+            return None
             
-            # Use a frame from about 1/3 into the video to give time for user to settle
-            target_frame = min(10, total_frames - 1)
-            
-            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-            ret, frame = cap.read()
-            cap.release()
-            
-            if not ret:
-                logger.error(f"Failed to extract frame {target_frame} from video")
-                return None
-                
-            return frame
-        finally:
-            # Clean up temporary file
-            try:
-                os.unlink(video_temp_path)
-            except Exception as e:
-                logger.error(f"Error cleaning up temporary file: {e}")
+        return frame
     except Exception as e:
         logger.error(f"Error extracting frame from video: {e}")
         return None
@@ -90,32 +78,27 @@ def compare_face_embeddings(embedding1, embedding2):
     
     return float(round(normalized_score, 2))
 
-async def calculate_face_similarity(video_bytes: bytes, user_id: str, profile_image_bytes: bytes) -> float:
-    """Calculate face similarity between video frame and profile photo"""
+async def calculate_face_similarity(video_path, user_id, profile_image_bytes):
+    """Calculate face similarity between video frame and profile photo (from bytes)"""
     try:
-        if profile_image_bytes is None:
-            logger.warning(f"No profile photo found for user {user_id}")
-            return 0.0
-            
         # Extract frame from video
-        video_frame = extract_frame_from_video(video_bytes)
+        video_frame = extract_frame_from_video(video_path)
         if video_frame is None:
             return 0.0
-            
-        # Convert profile image bytes to numpy array
-        profile_np = np.frombuffer(profile_image_bytes, np.uint8)
-        profile_image = cv2.imdecode(profile_np, cv2.IMREAD_COLOR)
-        if profile_image is None:
-            logger.error("Failed to decode profile image")
+        # Load profile photo from bytes
+        if profile_image_bytes is None:
+            logger.warning(f"No profile photo bytes provided for user {user_id}")
             return 0.0
-            
+        np_arr = np.frombuffer(profile_image_bytes, np.uint8)
+        profile_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if profile_image is None:
+            logger.error(f"Failed to decode profile photo for user {user_id}")
+            return 0.0
         # Get face embeddings
         video_embedding = get_face_embedding(video_frame)
         profile_embedding = get_face_embedding(profile_image)
-        
         # Compare embeddings
         similarity = compare_face_embeddings(video_embedding, profile_embedding)
-        
         logger.info(f"Face similarity score: {similarity}")
         return similarity
     except Exception as e:
