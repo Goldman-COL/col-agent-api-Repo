@@ -40,3 +40,4 @@ charset-normalizer
 urllib3
 watchfiles
 tf-keras
+torch
