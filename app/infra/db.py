@@ -7,6 +7,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, String, DateTime
 import datetime
 from sqlalchemy.orm import Session
+from typing import Optional
 
 load_dotenv()
 
@@ -37,6 +38,7 @@ class VideoKYC(Base):
     speech_score = Column(Integer)
     face_score = Column(Integer)
     liveness_score = Column(Integer)
+    challenge_phrase = Column(String)
 
 # Helper to insert a new KYC record
 def insert_kyc_record(
@@ -48,7 +50,8 @@ def insert_kyc_record(
     image_type: str,
     speech_score: int,
     face_score: int,
-    liveness_score: int
+    liveness_score: int,
+    challenge_phrase: str = None
 ):
     session: Session = KycSession()
     try:
@@ -61,7 +64,8 @@ def insert_kyc_record(
             image_type=image_type,
             speech_score=speech_score,
             face_score=face_score,
-            liveness_score=liveness_score
+            liveness_score=liveness_score,
+            challenge_phrase=challenge_phrase
         )
         session.add(record)
         session.commit()
@@ -72,13 +76,14 @@ def insert_kyc_record(
     finally:
         session.close()
 
-def insert_kyc_start_record(ssp_id: int, request_id: str):
+def insert_kyc_start_record(ssp_id: int, request_id: str, challenge_phrase: str = None, status: str = "started"):
     session: Session = KycSession()
     try:
         record = VideoKYC(
             ssp_id=ssp_id,
             request_id=request_id,
-            status="started"
+            status=status,
+            challenge_phrase=challenge_phrase
         )
         session.add(record)
         session.commit()
@@ -97,7 +102,8 @@ def update_kyc_record(
     image_type: str,
     speech_score: int,
     face_score: int,
-    liveness_score: int
+    liveness_score: int,
+    challenge_phrase: str = None
 ):
     session: Session = KycSession()
     try:
@@ -110,6 +116,8 @@ def update_kyc_record(
             record.speech_score = speech_score
             record.face_score = face_score
             record.liveness_score = liveness_score
+            if challenge_phrase is not None:
+                record.challenge_phrase = challenge_phrase
             session.commit()
         else:
             raise Exception(f"KYC record with id {kyc_id} not found")
@@ -128,7 +136,8 @@ def update_kyc_record_by_ssp_and_request_id(
     image_type: str,
     speech_score: int,
     face_score: int,
-    liveness_score: int
+    liveness_score: int,
+    challenge_phrase: str = None
 ):
     session: Session = KycSession()
     try:
@@ -141,9 +150,24 @@ def update_kyc_record_by_ssp_and_request_id(
             record.speech_score = speech_score
             record.face_score = face_score
             record.liveness_score = liveness_score
+            if challenge_phrase is not None:
+                record.challenge_phrase = challenge_phrase
             session.commit()
         else:
             raise Exception(f"KYC record with ssp_id {ssp_id} and request_id {request_id} not found")
+    except Exception as e:
+        session.rollback()
+        raise e
+    finally:
+        session.close()
+
+def get_challenge_phrase(ssp_id: int, request_id: str) -> Optional[str]:
+    session: Session = KycSession()
+    try:
+        record = session.query(VideoKYC).filter_by(ssp_id=ssp_id, request_id=request_id).first()
+        if record and record.challenge_phrase:
+            return record.challenge_phrase
+        return None
     except Exception as e:
         session.rollback()
         raise e

@@ -44,7 +44,7 @@ from app.face_verification import FaceVerifier
 from app.whisper import calculate_speech_score
 from app.whisper import transcribe_audio
 from app.infra.azure_blob import upload_blob, download_blob
-from app.infra.db import ColSession, insert_kyc_record, insert_kyc_start_record, update_kyc_record_by_ssp_and_request_id
+from app.infra.db import ColSession, insert_kyc_record, insert_kyc_start_record, update_kyc_record_by_ssp_and_request_id, get_challenge_phrase
 from fastapi import HTTPException
 import cv2
 import numpy as np
@@ -96,9 +96,9 @@ face_verifier = FaceVerifier()
 
 async def process_verification(video_file: UploadFile, ssp_id: int, profile_image_bytes: Optional[bytes], profile_image_url: Optional[str] = None, image_type: Optional[str] = None, request_id: Optional[str] = None):
     logger.info(f"Starting verification process for ssp_id {ssp_id}")
-    expected_phrase = CHALLENGE_PHRASES.get(ssp_id, "")
+    expected_phrase = get_challenge_phrase(ssp_id, request_id)
     if not expected_phrase:
-        logger.warning(f"No challenge phrase found for ssp_id {ssp_id}")
+        logger.warning(f"No challenge phrase found for ssp_id {ssp_id}, request_id {request_id}")
         return {
             "ok": False,
             "speech": 0.0,
@@ -113,7 +113,7 @@ async def process_verification(video_file: UploadFile, ssp_id: int, profile_imag
         # Upload the video to Azure Blob Storage
         with open(temp_file_path, "rb") as f:
             video_bytes = f.read()
-        video_blob_name = f"{ssp_id}_{request_id}_{uuid.uuid4().hex}.webm" if request_id else f"{ssp_id}_{uuid.uuid4().hex}.webm"
+        video_blob_name = f"{ssp_id}_{request_id}.webm"
         video_blob_url = upload_blob(
             os.environ["AZURE_RECORDINGS_CONTAINER"],
             video_blob_name,
@@ -133,7 +133,6 @@ async def process_verification(video_file: UploadFile, ssp_id: int, profile_imag
         face_passed = face_score >= 0.80
         liveness_passed = liveness_score >= 0.50
         passed = speech_passed and face_passed and liveness_passed
-        CHALLENGE_PHRASES.pop(ssp_id, None)
         logger.info(f"Verification for ssp_id {ssp_id} completed: passed={passed}, "
                     f"speech={speech_score}, "
                     f"face={face_score}, "
@@ -178,10 +177,25 @@ async def process_verification(video_file: UploadFile, ssp_id: int, profile_imag
 #     return FileResponse("app/static/index.html")
 
 @app.get("/challenge")
-async def get_challenge(ssp_id: int):
+async def get_challenge(ssp_id: int, request_id: str):
     phrase = generate_challenge_phrase()
-    CHALLENGE_PHRASES[ssp_id] = phrase
-    logger.info(f"Generated challenge phrase for ssp_id {ssp_id}: {phrase}")
+    try:
+        update_kyc_record_by_ssp_and_request_id(
+            ssp_id=ssp_id,
+            request_id=request_id,
+            status=None,
+            video_url=None,
+            image_url=None,
+            image_type=None,
+            speech_score=None,
+            face_score=None,
+            liveness_score=None,
+            challenge_phrase=phrase
+        )
+        logger.info(f"Generated and stored challenge phrase for ssp_id {ssp_id}, request_id {request_id}: {phrase}")
+    except Exception as e:
+        logger.error(f"Failed to store challenge phrase: {e}")
+        raise HTTPException(status_code=500, detail="Failed to store challenge phrase")
     return {"phrase": phrase}
 
 @app.post("/verify")
@@ -328,10 +342,10 @@ async def get_profile_photo(sspid: int):
 @app.post("/start-video-kyc")
 async def start_video_kyc(ssp_id: int = Form(...)):
     request_id = str(uuid.uuid4())
-    kyc_id = insert_kyc_start_record(ssp_id, request_id)
+    kyc_id = insert_kyc_start_record(ssp_id, request_id, status="started")
     return {"kyc_id": kyc_id, "request_id": request_id}
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True, log_level="info",
-                access_log=True, use_colors=True)
+                access_log=True, use_colors=True, timeout_keep_alive=120)

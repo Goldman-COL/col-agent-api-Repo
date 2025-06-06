@@ -6,6 +6,7 @@ from insightface.app import FaceAnalysis
 import logging
 from typing import Optional, Tuple, Dict
 import numpy.typing as npt
+from app.infra.db import get_challenge_phrase
 
 class FaceVerifier:
     def __init__(self, providers: list[str] = ['CPUExecutionProvider'], det_size: tuple[int, int] = (640, 640)):
@@ -125,13 +126,6 @@ class FaceVerifier:
     def extract_frame_from_video(self, video_path: str, frame_index: int = 10) -> Optional[npt.NDArray[np.uint8]]:
         """
         Extract a frame from the video for face analysis.
-
-        Args:
-            video_path: Path to the video file.
-            frame_index: Frame number to extract (default: 10).
-
-        Returns:
-            NumPy array of the extracted frame, or None if extraction fails.
         """
         if not isinstance(video_path, str) or not os.path.exists(video_path):
             self.logger.error(f"Invalid or missing video file: {video_path}")
@@ -158,12 +152,6 @@ class FaceVerifier:
     def check_face_in_image(self, image: npt.NDArray[np.uint8]) -> Dict[str, str]:
         """
         Check if a face is clearly visible in the image and return details.
-
-        Args:
-            image: Input image as a NumPy array (BGR format).
-
-        Returns:
-            Dictionary with 'has_face' (bool) and 'reason' (str).
         """
         self.init_face_model()
         try:
@@ -172,22 +160,18 @@ class FaceVerifier:
             if img_h / img_w > 2:
                 self.logger.info("Image likely cropped, head may not be visible")
                 return {"has_face": False, "reason": "Head likely cropped out of frame"}
-            
             faces = self.face_app.get(image)
             if not faces:
                 self.logger.info("No face detected in the image")
                 return {"has_face": False, "reason": "No face detected"}
-            
             if len(faces) > 1:
                 self.logger.warning(f"Multiple faces detected: {len(faces)}, using largest")
             faces = sorted(faces, key=lambda x: x.bbox[2] * x.bbox[3], reverse=True)
             largest_face = faces[0]
-            
             is_visible, reason = self.is_face_clearly_visible(image, largest_face)
             if not is_visible:
                 self.logger.info(f"Face not clearly visible: {reason}")
                 return {"has_face": False, "reason": reason}
-            
             self.logger.info("Face is clearly visible")
             return {"has_face": True, "reason": "Face is clearly visible"}
         except Exception as e:
@@ -197,12 +181,6 @@ class FaceVerifier:
     def get_face_embedding(self, image: npt.NDArray[np.uint8]) -> Optional[npt.NDArray[np.float32]]:
         """
         Get face embedding from an image if the face is clearly visible.
-
-        Args:
-            image: Input image as a NumPy array (BGR format).
-
-        Returns:
-            NumPy array containing the face embedding, or None if no clear face is detected.
         """
         result = self.check_face_in_image(image)
         if not result["has_face"]:
@@ -241,18 +219,9 @@ class FaceVerifier:
             self.logger.error(f"Error comparing embeddings: {e}")
             return 0.0
 
-    async def calculate_face_similarity(self, video_path: str, user_id: str, 
-                                      profile_image_bytes: Optional[bytes]) -> float:
+    async def calculate_face_similarity(self, video_path: str, user_id: str, profile_image_bytes: Optional[bytes]) -> float:
         """
         Calculate face similarity between video frame and profile photo.
-
-        Args:
-            video_path: Path to the video file.
-            user_id: User identifier for logging.
-            profile_image_bytes: Profile image as bytes.
-
-        Returns:
-            Similarity score (0.0 to 1.0).
         """
         try:
             if not isinstance(video_path, str) or not os.path.exists(video_path):
