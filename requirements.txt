@@ -43,3 +43,4 @@ tf-keras
 torch
 sqlalchemy
 pyodbc
+tensorflow-cpu
