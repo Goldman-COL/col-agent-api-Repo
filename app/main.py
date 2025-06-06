@@ -4,6 +4,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import time
 import uuid
+from sqlalchemy import text
 
 load_dotenv()
 
@@ -39,15 +40,20 @@ from fastapi.responses import FileResponse
 
 from app.generate_challenge_phrase import generate_challenge_phrase
 from app.liveness_cnn import calculate_liveness_score
-from app.face_verification import calculate_face_similarity
+from app.face_verification import FaceVerifier
 from app.whisper import calculate_speech_score
 from app.whisper import transcribe_audio
 from app.infra.azure_blob import upload_blob, download_blob
+from app.infra.db import ColSession, insert_kyc_record, insert_kyc_start_record, update_kyc_record_by_ssp_and_request_id
+from fastapi import HTTPException
+import cv2
+import numpy as np
+import requests
 
 app = FastAPI(title="Video Verification API")
 
 # Mount the static directory
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
+# app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 app.add_middleware(
     CORSMiddleware,
@@ -86,11 +92,13 @@ async def extract_audio_from_video(video_file: UploadFile) -> str:
         logger.error(f"Error extracting audio: {e}")
         raise e
 
-async def process_verification(video_file: UploadFile, user_id: str):
-    logger.info(f"Starting verification process for user {user_id}")
-    expected_phrase = CHALLENGE_PHRASES.get(user_id, "")
+face_verifier = FaceVerifier()
+
+async def process_verification(video_file: UploadFile, ssp_id: int, profile_image_bytes: Optional[bytes], profile_image_url: Optional[str] = None, image_type: Optional[str] = None, request_id: Optional[str] = None):
+    logger.info(f"Starting verification process for ssp_id {ssp_id}")
+    expected_phrase = CHALLENGE_PHRASES.get(ssp_id, "")
     if not expected_phrase:
-        logger.warning(f"No challenge phrase found for user {user_id}")
+        logger.warning(f"No challenge phrase found for ssp_id {ssp_id}")
         return {
             "ok": False,
             "speech": 0.0,
@@ -105,26 +113,19 @@ async def process_verification(video_file: UploadFile, user_id: str):
         # Upload the video to Azure Blob Storage
         with open(temp_file_path, "rb") as f:
             video_bytes = f.read()
-        video_blob_name = f"{user_id}_{uuid.uuid4().hex}.webm"
+        video_blob_name = f"{ssp_id}_{request_id}_{uuid.uuid4().hex}.webm" if request_id else f"{ssp_id}_{uuid.uuid4().hex}.webm"
         video_blob_url = upload_blob(
             os.environ["AZURE_RECORDINGS_CONTAINER"],
             video_blob_name,
             video_bytes,
             "video/webm"
         )
-        # Download profile image from Azure Blob Storage
-        profile_blob_name = f"{user_id}.jpg"  # or .png if you want to check both
-        try:
-            profile_image_bytes = download_blob(os.environ["AZURE_PROFILE_CONTAINER"], profile_blob_name)
-        except Exception as e:
-            logger.error(f"Could not download profile image for user {user_id}: {e}")
-            profile_image_bytes = None
         await video_file.seek(0)
         transcription = await transcribe_audio(video_file)
         logger.info(f"Transcription: {transcription}")
         speech_score = calculate_speech_score(expected_phrase, transcription)
         logger.info(f"Speech score: {speech_score}, expected: '{expected_phrase}', got: '{transcription}'")
-        face_score = await calculate_face_similarity(temp_file_path, user_id, profile_image_bytes)
+        face_score = await face_verifier.calculate_face_similarity(temp_file_path, ssp_id, profile_image_bytes)
         logger.info(f"Face score: {face_score}")
         liveness_score = await calculate_liveness_score(temp_file_path)
         logger.info(f"Liveness score: {liveness_score}")
@@ -132,11 +133,28 @@ async def process_verification(video_file: UploadFile, user_id: str):
         face_passed = face_score >= 0.80
         liveness_passed = liveness_score >= 0.50
         passed = speech_passed and face_passed and liveness_passed
-        CHALLENGE_PHRASES.pop(user_id, None)
-        logger.info(f"Verification for user {user_id} completed: passed={passed}, "
+        CHALLENGE_PHRASES.pop(ssp_id, None)
+        logger.info(f"Verification for ssp_id {ssp_id} completed: passed={passed}, "
                     f"speech={speech_score}, "
                     f"face={face_score}, "
                     f"liveness={liveness_score}")
+        # Update KYC record if ssp_id and request_id are provided
+        if ssp_id is not None and request_id is not None:
+            try:
+                update_kyc_record_by_ssp_and_request_id(
+                    ssp_id=ssp_id,
+                    request_id=request_id,
+                    status="success" if passed else "failed",
+                    video_url=video_blob_url,
+                    image_url=profile_image_url or "",
+                    image_type=image_type or ("url" if profile_image_url else "blob"),
+                    speech_score=int(speech_score * 100),
+                    face_score=int(face_score * 100),
+                    liveness_score=int(liveness_score * 100)
+                )
+                logger.info(f"KYC record updated for ssp_id {ssp_id} and request_id {request_id}")
+            except Exception as e:
+                logger.error(f"Failed to update KYC record: {e}")
         return {
             "ok": bool(passed),
             "speech": float(speech_score),
@@ -155,48 +173,82 @@ async def process_verification(video_file: UploadFile, user_id: str):
             "video_url": video_blob_url
         }
 
-@app.get("/", response_class=FileResponse)
-async def root():
-    return FileResponse("app/static/index.html")
+# @app.get("/", response_class=FileResponse)
+# async def root():
+#     return FileResponse("app/static/index.html")
 
 @app.get("/challenge")
-async def get_challenge(user_id: str):
+async def get_challenge(ssp_id: int):
     phrase = generate_challenge_phrase()
-    
-    CHALLENGE_PHRASES[user_id] = phrase
-    
-    logger.info(f"Generated challenge phrase for user {user_id}: {phrase}")
+    CHALLENGE_PHRASES[ssp_id] = phrase
+    logger.info(f"Generated challenge phrase for ssp_id {ssp_id}: {phrase}")
     return {"phrase": phrase}
 
 @app.post("/verify")
 async def verify_video(
     file: UploadFile = File(...),
-    user_id: str = Form(...)
+    ssp_id: int = Form(...),
+    profile_image_url: Optional[str] = Form(None),
+    profile_image: Optional[UploadFile] = File(None),
+    request_id: Optional[str] = Form(None)
 ):
-    logger.info(f"Received verification request for user {user_id}")
-    
-    result = await process_verification(file, user_id)
-    
+    logger.info(f"Received verification request for ssp_id {ssp_id}")
+    profile_image_bytes = None
+    image_type = None
+    used_profile_image_url = None
+    # Scenario 1: Upload new image
+    if profile_image is not None:
+        content_type = profile_image.content_type
+        extension = "jpg"
+        if content_type == "image/png":
+            extension = "png"
+        elif content_type == "image/jpeg":
+            extension = "jpg"
+        blob_name = f"{ssp_id}_{request_id}.{extension}"
+        content = await profile_image.read()
+        used_profile_image_url = upload_blob(
+            os.environ["AZURE_PROFILE_CONTAINER"],
+            blob_name,
+            content,
+            content_type
+        )
+        profile_image_bytes = content
+        image_type = "upload"
+    # Scenario 2: Use existing image URL
+    elif profile_image_url:
+        try:
+            resp = requests.get(profile_image_url, timeout=5)
+            if resp.status_code == 200:
+                profile_image_bytes = resp.content
+                used_profile_image_url = profile_image_url
+                image_type = "url"
+            else:
+                logger.error(f"Failed to download profile image from {profile_image_url}, status {resp.status_code}")
+                return {"ok": False, "error": "Failed to download selected profile image."}
+        except Exception as e:
+            logger.error(f"Error downloading profile image from {profile_image_url}: {e}")
+            return {"ok": False, "error": "Error downloading selected profile image."}
+    else:
+        return {"ok": False, "error": "You must either upload a new profile image or select an existing one."}
+    result = await process_verification(file, ssp_id, profile_image_bytes, used_profile_image_url, image_type, request_id=request_id)
     return result
 
 @app.post("/upload_profile")
 async def upload_profile_photo(
     file: UploadFile = File(...),
-    user_id: str = Form(...)
+    ssp_id: int = Form(...),
+    request_id: str = Form(...)
 ):
-    logger.info(f"Received profile photo upload for user {user_id}")
-
+    logger.info(f"Received profile photo upload for ssp_id {ssp_id} and request_id {request_id}")
     content_type = file.content_type
     if not content_type.startswith("image/"):
         return {"ok": False, "error": "Uploaded file is not an image"}
-
     extension = "jpg"
     if content_type == "image/png":
         extension = "png"
     elif content_type == "image/jpeg":
         extension = "jpg"
-
-    blob_name = f"{user_id}.{extension}"
+    blob_name = f"{ssp_id}_{request_id}.{extension}"
     try:
         content = await file.read()
         url = upload_blob(
@@ -205,11 +257,79 @@ async def upload_profile_photo(
             content,
             content_type
         )
-        logger.info(f"Profile photo saved for user {user_id} at {url}")
+        logger.info(f"Profile photo saved for ssp_id {ssp_id} and request_id {request_id} at {url}")
         return {"ok": True, "profile_url": url}
     except Exception as e:
         logger.error(f"Error saving profile photo: {e}")
         return {"ok": False, "error": str(e)}
+
+@app.get("/profile_photo")
+async def get_profile_photo(sspid: int):
+    """Fetch all profile photo URLs for a given SSPID from COL_Server and check for face presence with user-friendly reason and technical explanation."""
+    session = ColSession()
+    try:
+        sql = """
+        SELECT s.ID, 'https://images.cityoflove.com/dynamic/images/' + 
+            LEFT(sp.filename, 
+                 CASE WHEN CHARINDEX('?ts=', sp.filename) > 0 
+                      THEN CHARINDEX('?ts=', sp.filename) - 1 
+                      ELSE LEN(sp.filename) 
+                 END
+            ) AS filename
+        FROM tblSSP AS s
+        LEFT JOIN tblSSPphoto AS sp ON sp.fk_SSP = s.ID
+        WHERE s.ID = :sspid
+        """
+        results = session.execute(text(sql), {"sspid": sspid}).fetchall()
+        photo_urls = [row.filename for row in results if row.filename]
+        if not photo_urls:
+            raise HTTPException(status_code=404, detail="Profile photo not found")
+        photo_results = []
+        for url in photo_urls:
+            try:
+                resp = requests.get(url, timeout=5)
+                if resp.status_code == 200:
+                    img_array = np.frombuffer(resp.content, np.uint8)
+                    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                    face_info = face_verifier.check_face_in_image(img)
+                else:
+                    face_info = {"has_face": False, "reason": "Image could not be loaded"}
+            except Exception as e:
+                logger.error(f"Error checking face for {url}: {e}")
+                face_info = {"has_face": False, "reason": f"Error: {str(e)}"}
+
+            # Map technical reason to user-friendly reason
+            technical_reason = face_info.get("reason", "")
+            if face_info["has_face"]:
+                user_reason = "Face is clearly visible"
+            elif "blurry" in technical_reason:
+                user_reason = "Face is too blurry"
+            elif "too small" in technical_reason:
+                user_reason = "Face is too small in the image"
+            elif "No face detected" in technical_reason:
+                user_reason = "No face detected"
+            elif "cropped" in technical_reason:
+                user_reason = "Face is not fully visible"
+            elif "detection confidence" in technical_reason:
+                user_reason = "Face not detected clearly"
+            else:
+                user_reason = "Face not suitable for verification"
+
+            photo_results.append({
+                "url": url,
+                "has_face": face_info["has_face"],
+                "reason": user_reason,
+                "explanation": technical_reason
+            })
+        return {"sspid": sspid, "photos": photo_results}
+    finally:
+        session.close()
+
+@app.post("/start-video-kyc")
+async def start_video_kyc(ssp_id: int = Form(...)):
+    request_id = str(uuid.uuid4())
+    kyc_id = insert_kyc_start_record(ssp_id, request_id)
+    return {"kyc_id": kyc_id, "request_id": request_id}
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,1 +1,1 @@
- 
+# This package contains infrastructure utilities such as Azure Blob and database connections. 
